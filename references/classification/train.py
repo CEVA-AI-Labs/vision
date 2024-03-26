@@ -6,6 +6,7 @@ import warnings
 import presets
 import torch
 import torch.utils.data
+from torch.utils.data import DataLoader, Subset, Dataset
 import torchvision
 import torchvision.transforms
 import transforms
@@ -14,6 +15,55 @@ from sampler import RASampler
 from torch import nn
 from torch.utils.data.dataloader import default_collate
 from torchvision.transforms.functional import InterpolationMode
+from torchvision.transforms import transforms, Compose, Normalize, Resize, CenterCrop, ToTensor
+# import sys
+#
+# sys.path.append("/projects/vbu_projects/users/ronim/RetrainTeam/liteml/ailabs_liteml/")
+from liteml.ailabs_liteml.retrainer import RetrainerModel, RetrainerConfig
+
+
+
+def create_calibration_loader(dataset: Dataset, calib_size: int = 30) -> DataLoader:
+    """
+    Creates a calibration data loader from a given test dataset.
+
+    Args:
+        dataset (torch.utils.data.DataLoader): The dataset to sample calibration data from.
+        calib_size (int): The number of samples to use for calibration. default 50
+
+    Returns:
+        torch.utils.data.DataLoader: A data loader containing the calibration dataset.
+    """
+    calib_indices = range(calib_size)
+    calibration_dataset = Subset(dataset, calib_indices)
+    normalize = Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    )
+    calibration_dataset.transform = Compose([
+        Resize(args.val_resize_size, interpolation=args.interpolation),
+        CenterCrop(args.train_crop_size),
+        ToTensor(),
+        normalize,
+    ])
+    calibration_loader = DataLoader(
+        calibration_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        pin_memory=True,
+    )
+    return calibration_loader
+
+
+def seed_torch(seed=0):
+    import numpy as np
+    import random
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
@@ -27,7 +77,12 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         start_time = time.time()
         image, target = image.to(device), target.to(device)
         with torch.cuda.amp.autocast(enabled=scaler is not None):
-            output = model(image)
+            if args.model == 'inception_v3':
+                model.AuxLogits = None
+                output, aux_outs = model(image)
+            else:
+                output = model(image)
+
             loss = criterion(output, target)
 
         optimizer.zero_grad()
@@ -84,9 +139,9 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
 
     num_processed_samples = utils.reduce_across_processes(num_processed_samples)
     if (
-        hasattr(data_loader.dataset, "__len__")
-        and len(data_loader.dataset) != num_processed_samples
-        and torch.distributed.get_rank() == 0
+            hasattr(data_loader.dataset, "__len__")
+            and len(data_loader.dataset) != num_processed_samples
+            and torch.distributed.get_rank() == 0
     ):
         # See FIXME above
         warnings.warn(
@@ -198,6 +253,8 @@ def load_data(traindir, valdir, args):
 
 
 def main(args):
+    seed_torch(42)
+    eval_pretrained_model = False
     if args.output_dir:
         utils.mkdir(args.output_dir)
 
@@ -212,8 +269,8 @@ def main(args):
     else:
         torch.backends.cudnn.benchmark = True
 
-    train_dir = os.path.join(args.data_path, "train")
-    val_dir = os.path.join(args.data_path, "val")
+    train_dir = os.path.join(args.data_path, "imagenet_training")
+    val_dir = os.path.join(args.data_path, "imagenet_val")
     dataset, dataset_test, train_sampler, test_sampler = load_data(train_dir, val_dir, args)
 
     collate_fn = None
@@ -247,8 +304,30 @@ def main(args):
 
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+
+    if not eval_pretrained_model:
+        rtrnrCfg = RetrainerConfig(args.liteml_cfg)
+        # create calibration loader if static or Z quantization
+        if rtrnrCfg.optimizations_config["QAT"]["data_quantization"]["quantization_mode"] == 'static' or \
+                rtrnrCfg.optimizations_config["QAT"]["data_quantization"]["observer"] == 'Z':
+            calibration_loader = create_calibration_loader(dataset)
+            rtrnrCfg.optimizations_config["QAT"]["data_quantization"][
+                "calibration_loader"
+            ] = calibration_loader
+            rtrnrCfg.optimizations_config["QAT"]["data_quantization"][
+                "calibration_loader_key"
+            ] = lambda model, x: model(x[0].cuda())
+        model = RetrainerModel(model, rtrnrCfg)
+        model.to(device)
+    else:  # evaluate pretrained model.
+        images, _ = next(iter(data_loader))
+        dummy_input = torch.rand(images.shape).to(device)
+        model = RetrainerModel.from_pretrained(model, args.liteml_cfg, 'state_dict.pt', device,
+                                               dummy_input)
+        print("evaluate pretrain")
+        evaluate(model, criterion, data_loader_test, device=device)
+        return
 
     custom_keys_weight_decay = []
     if args.bias_weight_decay is not None:
@@ -355,6 +434,11 @@ def main(args):
             evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
         else:
             evaluate(model, criterion, data_loader_test, device=device)
+            # save state dict
+            torch.save(model.state_dict(), "state_dict.pt")
+            model(torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda())
+            model.export_to_onnx(
+                torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda(), "model.onnx", inplace=True)
         return
 
     print("Start training")
@@ -381,6 +465,11 @@ def main(args):
                 checkpoint["scaler"] = scaler.state_dict()
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+    torch.save(model.state_dict(), "state_dict.pt")
+    model(torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda())
+    model.export_to_onnx(
+        torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda(), "model.onnx", inplace=True
+    )
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -392,7 +481,7 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Classification Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="/datasets01/imagenet_full_size/061417/", type=str, help="dataset path")
+    parser.add_argument("--data-path", default="/AI_Labs/datasets/ImageNet/imagenet/", type=str, help="dataset path")
     parser.add_argument("--model", default="resnet18", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -403,7 +492,7 @@ def get_args_parser(add_help=True):
         "-j", "--workers", default=16, type=int, metavar="N", help="number of data loading workers (default: 16)"
     )
     parser.add_argument("--opt", default="sgd", type=str, help="optimizer")
-    parser.add_argument("--lr", default=0.1, type=float, help="initial learning rate")
+    parser.add_argument("--lr", default=0.01, type=float, help="initial learning rate")
     parser.add_argument("--momentum", default=0.9, type=float, metavar="M", help="momentum")
     parser.add_argument(
         "--wd",
@@ -515,7 +604,8 @@ def get_args_parser(add_help=True):
         "--ra-reps", default=3, type=int, help="number of repetitions for Repeated Augmentation (default: 3)"
     )
     parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
-    parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
+    parser.add_argument("--backend", default="Tensor", type=str.lower, help="PIL or tensor - case insensitive")
+    parser.add_argument("--liteml-cfg", default=None, type=str, help="path to liteml config file")
     return parser
 
 
