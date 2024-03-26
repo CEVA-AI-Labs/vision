@@ -13,9 +13,7 @@ from ._api import register_model, Weights, WeightsEnum
 from ._meta import _IMAGENET_CATEGORIES
 from ._utils import _ovewrite_named_param, handle_legacy_interface
 
-
 __all__ = ["Inception3", "InceptionOutputs", "_InceptionOutputs", "Inception_V3_Weights", "inception_v3"]
-
 
 InceptionOutputs = namedtuple("InceptionOutputs", ["logits", "aux_logits"])
 InceptionOutputs.__annotations__ = {"logits": Tensor, "aux_logits": Optional[Tensor]}
@@ -27,13 +25,13 @@ _InceptionOutputs = InceptionOutputs
 
 class Inception3(nn.Module):
     def __init__(
-        self,
-        num_classes: int = 1000,
-        aux_logits: bool = True,
-        transform_input: bool = False,
-        inception_blocks: Optional[List[Callable[..., nn.Module]]] = None,
-        init_weights: Optional[bool] = None,
-        dropout: float = 0.5,
+            self,
+            num_classes: int = 1000,
+            aux_logits: bool = True,
+            transform_input: bool = False,
+            inception_blocks: Optional[List[Callable[..., nn.Module]]] = None,
+            init_weights: Optional[bool] = None,
+            dropout: float = 0.5,
     ) -> None:
         super().__init__()
         _log_api_usage_once(self)
@@ -133,9 +131,9 @@ class Inception3(nn.Module):
         x = self.Mixed_6e(x)
         # N x 768 x 17 x 17
         aux: Optional[Tensor] = None
-        if self.AuxLogits is not None:
-            if self.training:
-                aux = self.AuxLogits(x)
+        # if self.AuxLogits is not None:
+        #     if self.training:
+        #         aux = self.AuxLogits(x)
         # N x 768 x 17 x 17
         x = self.Mixed_7a(x)
         # N x 1280 x 8 x 8
@@ -175,7 +173,7 @@ class Inception3(nn.Module):
 
 class InceptionA(nn.Module):
     def __init__(
-        self, in_channels: int, pool_features: int, conv_block: Optional[Callable[..., nn.Module]] = None
+            self, in_channels: int, pool_features: int, conv_block: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         super().__init__()
         if conv_block is None:
@@ -190,6 +188,7 @@ class InceptionA(nn.Module):
         self.branch3x3dbl_3 = conv_block(96, 96, kernel_size=3, padding=1)
 
         self.branch_pool = conv_block(in_channels, pool_features, kernel_size=1)
+        self.avg_pool = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
 
     def _forward(self, x: Tensor) -> List[Tensor]:
         branch1x1 = self.branch1x1(x)
@@ -201,7 +200,7 @@ class InceptionA(nn.Module):
         branch3x3dbl = self.branch3x3dbl_2(branch3x3dbl)
         branch3x3dbl = self.branch3x3dbl_3(branch3x3dbl)
 
-        branch_pool = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
+        branch_pool = self.avg_pool(x)
         branch_pool = self.branch_pool(branch_pool)
 
         outputs = [branch1x1, branch5x5, branch3x3dbl, branch_pool]
@@ -222,6 +221,7 @@ class InceptionB(nn.Module):
         self.branch3x3dbl_1 = conv_block(in_channels, 64, kernel_size=1)
         self.branch3x3dbl_2 = conv_block(64, 96, kernel_size=3, padding=1)
         self.branch3x3dbl_3 = conv_block(96, 96, kernel_size=3, stride=2)
+        self.max_pool2d = nn.MaxPool2d(kernel_size=3, stride=2)
 
     def _forward(self, x: Tensor) -> List[Tensor]:
         branch3x3 = self.branch3x3(x)
@@ -230,7 +230,7 @@ class InceptionB(nn.Module):
         branch3x3dbl = self.branch3x3dbl_2(branch3x3dbl)
         branch3x3dbl = self.branch3x3dbl_3(branch3x3dbl)
 
-        branch_pool = F.max_pool2d(x, kernel_size=3, stride=2)
+        branch_pool = self.max_pool2d(x)
 
         outputs = [branch3x3, branch3x3dbl, branch_pool]
         return outputs
@@ -242,7 +242,7 @@ class InceptionB(nn.Module):
 
 class InceptionC(nn.Module):
     def __init__(
-        self, in_channels: int, channels_7x7: int, conv_block: Optional[Callable[..., nn.Module]] = None
+            self, in_channels: int, channels_7x7: int, conv_block: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         super().__init__()
         if conv_block is None:
@@ -261,6 +261,7 @@ class InceptionC(nn.Module):
         self.branch7x7dbl_5 = conv_block(c7, 192, kernel_size=(1, 7), padding=(0, 3))
 
         self.branch_pool = conv_block(in_channels, 192, kernel_size=1)
+        self.avg_pool2d = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
 
     def _forward(self, x: Tensor) -> List[Tensor]:
         branch1x1 = self.branch1x1(x)
@@ -275,7 +276,7 @@ class InceptionC(nn.Module):
         branch7x7dbl = self.branch7x7dbl_4(branch7x7dbl)
         branch7x7dbl = self.branch7x7dbl_5(branch7x7dbl)
 
-        branch_pool = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
+        branch_pool = self.avg_pool2d(x)
         branch_pool = self.branch_pool(branch_pool)
 
         outputs = [branch1x1, branch7x7, branch7x7dbl, branch_pool]
@@ -298,6 +299,7 @@ class InceptionD(nn.Module):
         self.branch7x7x3_2 = conv_block(192, 192, kernel_size=(1, 7), padding=(0, 3))
         self.branch7x7x3_3 = conv_block(192, 192, kernel_size=(7, 1), padding=(3, 0))
         self.branch7x7x3_4 = conv_block(192, 192, kernel_size=3, stride=2)
+        self.max_pool2d = nn.MaxPool2d(kernel_size=3, stride=2)
 
     def _forward(self, x: Tensor) -> List[Tensor]:
         branch3x3 = self.branch3x3_1(x)
@@ -308,7 +310,7 @@ class InceptionD(nn.Module):
         branch7x7x3 = self.branch7x7x3_3(branch7x7x3)
         branch7x7x3 = self.branch7x7x3_4(branch7x7x3)
 
-        branch_pool = F.max_pool2d(x, kernel_size=3, stride=2)
+        branch_pool = self.max_pool2d(x)
         outputs = [branch3x3, branch7x7x3, branch_pool]
         return outputs
 
@@ -334,6 +336,7 @@ class InceptionE(nn.Module):
         self.branch3x3dbl_3b = conv_block(384, 384, kernel_size=(3, 1), padding=(1, 0))
 
         self.branch_pool = conv_block(in_channels, 192, kernel_size=1)
+        self.avg_pool2d = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
 
     def _forward(self, x: Tensor) -> List[Tensor]:
         branch1x1 = self.branch1x1(x)
@@ -353,7 +356,7 @@ class InceptionE(nn.Module):
         ]
         branch3x3dbl = torch.cat(branch3x3dbl, 1)
 
-        branch_pool = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
+        branch_pool = self.avg_pool2d(x)
         branch_pool = self.branch_pool(branch_pool)
 
         outputs = [branch1x1, branch3x3, branch3x3dbl, branch_pool]
@@ -366,7 +369,7 @@ class InceptionE(nn.Module):
 
 class InceptionAux(nn.Module):
     def __init__(
-        self, in_channels: int, num_classes: int, conv_block: Optional[Callable[..., nn.Module]] = None
+            self, in_channels: int, num_classes: int, conv_block: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         super().__init__()
         if conv_block is None:
@@ -376,17 +379,19 @@ class InceptionAux(nn.Module):
         self.conv1.stddev = 0.01  # type: ignore[assignment]
         self.fc = nn.Linear(768, num_classes)
         self.fc.stddev = 0.001  # type: ignore[assignment]
+        self.adaptive_avg_pool2d = nn.AdaptiveAvgPool2d((1, 1))
+        self.avg_pool2d = nn.AvgPool2d(kernel_size=5, stride=3)
 
     def forward(self, x: Tensor) -> Tensor:
         # N x 768 x 17 x 17
-        x = F.avg_pool2d(x, kernel_size=5, stride=3)
+        x = self.avg_pool2d(x)
         # N x 768 x 5 x 5
         x = self.conv0(x)
         # N x 128 x 5 x 5
         x = self.conv1(x)
         # N x 768 x 1 x 1
         # Adaptive average pooling
-        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = self.adaptive_avg_pool2d(x)
         # N x 768 x 1 x 1
         x = torch.flatten(x, 1)
         # N x 768
@@ -400,12 +405,12 @@ class BasicConv2d(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, bias=False, **kwargs)
         self.bn = nn.BatchNorm2d(out_channels, eps=0.001)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv(x)
         x = self.bn(x)
-        return F.relu(x, inplace=True)
-
+        return self.relu(x)
 
 class Inception_V3_Weights(WeightsEnum):
     IMAGENET1K_V1 = Weights(
