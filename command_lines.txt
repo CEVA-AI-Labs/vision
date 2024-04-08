@@ -1,9 +1,17 @@
 # Run references/clasification/train.py
+#from following path: references/clasification/
 
 #inception_v3
 #static 
---liteml-cfg ../../config/liteml_config_static_8bit.yaml --test-only --model inception_v3 --weights Inception_V3_Weights.IMAGENET1K_V1 --val-resize-size 299 --val-crop-size 299 --train-crop-size 299
+torchrun --nproc_per_node=8 train.py --liteml-cfg ../../config/liteml_config_static_8bit.yaml --test-only --model inception_v3 --weights Inception_V3_Weights.IMAGENET1K_V1 --val-resize-size 299 --val-crop-size 299 --train-crop-size 299
 #dynamic
---liteml-cfg ../../config/liteml_config_dynamic_8bit.yaml --test-only --model inception_v3 --weights Inception_V3_Weights.IMAGENET1K_V1 --val-resize-size 299 --val-crop-size 299 --train-crop-size 299
+torchrun --nproc_per_node=8 train.py--liteml-cfg ../../config/liteml_config_dynamic_8bit.yaml --test-only --model inception_v3 --weights Inception_V3_Weights.IMAGENET1K_V1 --val-resize-size 299 --val-crop-size 299 --train-crop-size 299
 # Z quantizer QAT
---liteml-cfg ../../config/liteml_config_z_a8w4pc_s50.yaml --model inception_v3 --weights Inception_V3_Weights.IMAGENET1K_V1 --val-resize-size 299 --val-crop-size 299 --train-crop-size 299 --lr 0.001
+torchrun --nproc_per_node=8  train.py--liteml-cfg ../../config/liteml_config_z_a8w4pc_s50.yaml --model inception_v3 --weights Inception_V3_Weights.IMAGENET1K_V1 --val-resize-size 299 --val-crop-size 299 --train-crop-size 299 --lr 0.001
+#QAT_static
+torchrun --nproc_per_node=8 train.py --liteml-cfg ../../config/liteml_config_qat_static_a8w4pc_s50.yaml --model inception_v3 --weights Inception_V3_Weights.IMAGENET1K_V1 --val-resize-size 299 --val-crop-size 299 --train-crop-size 299 --lr 0.001
+
+
+#resnet50
+#static
+torchrun --nproc_per_node=8 --liteml-cfg ../../config/liteml_config_static_8bit.yaml --test-only --model resnet50 --weights Resnet50_Weights.IMAGENET1K_V1 --val-resize-size 224 --val-crop-size 224 --train-crop-size 224 --lr 0.001

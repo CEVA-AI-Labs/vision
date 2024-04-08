@@ -16,14 +16,14 @@ from torch import nn
 from torch.utils.data.dataloader import default_collate
 from torchvision.transforms.functional import InterpolationMode
 from torchvision.transforms import transforms, Compose, Normalize, Resize, CenterCrop, ToTensor
-# import sys
-#
-# sys.path.append("/projects/vbu_projects/users/ronim/RetrainTeam/liteml/ailabs_liteml/")
+import sys
+
+sys.path.append("/projects/vbu_projects/users/ronim/RetrainTeam/liteml/ailabs_liteml/")
 from liteml.ailabs_liteml.retrainer import RetrainerModel, RetrainerConfig
 
 
 
-def create_calibration_loader(dataset: Dataset, calib_size: int = 30) -> DataLoader:
+def create_calibration_loader(dataset: Dataset, calib_size: int = 1000) -> DataLoader:
     """
     Creates a calibration data loader from a given test dataset.
 
@@ -77,12 +77,7 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         start_time = time.time()
         image, target = image.to(device), target.to(device)
         with torch.cuda.amp.autocast(enabled=scaler is not None):
-            if args.model == 'inception_v3':
-                model.AuxLogits = None
-                output, aux_outs = model(image)
-            else:
-                output = model(image)
-
+            output = model(image)
             loss = criterion(output, target)
 
         optimizer.zero_grad()
@@ -217,7 +212,7 @@ def load_data(traindir, valdir, args):
     else:
         if args.weights and args.test_only:
             weights = torchvision.models.get_weight(args.weights)
-            preprocessing = weights.transforms(antialias=True)
+            preprocessing = weights.transforms()#antialias=True)
             if args.backend == "tensor":
                 preprocessing = torchvision.transforms.Compose([torchvision.transforms.PILToTensor(), preprocessing])
 
@@ -285,7 +280,6 @@ def main(args):
 
         def collate_fn(batch):
             return mixupcutmix(*default_collate(batch))
-
     data_loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -326,7 +320,9 @@ def main(args):
         model = RetrainerModel.from_pretrained(model, args.liteml_cfg, 'state_dict.pt', device,
                                                dummy_input)
         print("evaluate pretrain")
-        evaluate(model, criterion, data_loader_test, device=device)
+        with torch.no_grad():
+            model(torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda())
+            evaluate(model, criterion, data_loader_test, device=device)
         return
 
     custom_keys_weight_decay = []
@@ -438,7 +434,7 @@ def main(args):
             torch.save(model.state_dict(), "state_dict.pt")
             model(torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda())
             model.export_to_onnx(
-                torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda(), "model.onnx", inplace=True)
+                torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda(), f"model{args.model}.onnx", inplace=True)
         return
 
     print("Start training")
@@ -448,7 +444,6 @@ def main(args):
             train_sampler.set_epoch(epoch)
         train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
         lr_scheduler.step()
-        evaluate(model, criterion, data_loader_test, device=device)
         if model_ema:
             evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
         if args.output_dir:
@@ -463,13 +458,14 @@ def main(args):
                 checkpoint["model_ema"] = model_ema.state_dict()
             if scaler:
                 checkpoint["scaler"] = scaler.state_dict()
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
-    torch.save(model.state_dict(), "state_dict.pt")
-    model(torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda())
-    model.export_to_onnx(
-        torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda(), "model.onnx", inplace=True
+            utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"checkpoint_{args.model}_{epoch}.pth"))
+    print("Saving state dict and onnx")
+    torch.save(model_without_ddp.state_dict(), f"state_dict{args.model}.pt")
+    model_without_ddp(torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda())
+    model_without_ddp.export_to_onnx(
+        torch.randn(1, 3, args.val_resize_size, args.val_resize_size).cuda(), f"model_{args.model}.onnx", inplace=True
     )
+
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -485,9 +481,9 @@ def get_args_parser(add_help=True):
     parser.add_argument("--model", default="resnet18", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
-        "-b", "--batch-size", default=32, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
+        "-b", "--batch-size", default=128, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
-    parser.add_argument("--epochs", default=90, type=int, metavar="N", help="number of total epochs to run")
+    parser.add_argument("--epochs", default=30, type=int, metavar="N", help="number of total epochs to run")
     parser.add_argument(
         "-j", "--workers", default=16, type=int, metavar="N", help="number of data loading workers (default: 16)"
     )
@@ -532,7 +528,7 @@ def get_args_parser(add_help=True):
         "--lr-warmup-method", default="constant", type=str, help="the warmup method (default: constant)"
     )
     parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
-    parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
+    parser.add_argument("--lr-step-size", default=10, type=int, help="decrease lr every step-size epochs")
     parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
     parser.add_argument("--lr-min", default=0.0, type=float, help="minimum lr of lr schedule (default: 0.0)")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
